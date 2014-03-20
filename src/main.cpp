@@ -40,6 +40,7 @@
 #include "serial/serial.h"
 #include "std_msgs/Float32.h"
 #include "std_msgs/Header.h"
+#include "std_msgs/UInt8.h"
 #include "um6/comms.h"
 #include "um6/registers.h"
 #include "um6/Reset.h"
@@ -93,6 +94,32 @@ void sendCommand(um6::Comms* sensor, const um6::Accessor<RegT>& reg, std::string
   }
 }
 
+uint8_t baudValueToBitSetting(int32_t baud_rate)
+{
+  const uint8_t UM6_BAUD_9600 = 0x0;
+  const uint8_t UM6_BAUD_14400 = 0x1;
+  const uint8_t UM6_BAUD_19200 = 0x2;
+  const uint8_t UM6_BAUD_38400 = 0x3;
+  const uint8_t UM6_BAUD_57600 = 0x4;
+  const uint8_t UM6_BAUD_115200 = 0x5;
+  switch(baud_rate) //Determine the GPS baud rate
+  {
+    case 9600:
+      return UM6_BAUD_9600;
+    case 14400:
+      return UM6_BAUD_14400;
+    case 19200:
+      return UM6_BAUD_19200;
+    case 38400:
+      return UM6_BAUD_38400;
+    case 57600:
+      return UM6_BAUD_57600;
+    case 115200:
+      return UM6_BAUD_115200;
+    default: // Throw an error for bad values
+      throw std::runtime_error("Invalid Baud Rate");
+  }
+}
 
 /**
  * Send configuration messages to the UM6, critically, to turn on the value outputs
@@ -102,18 +129,35 @@ void configureSensor(um6::Comms* sensor)
 {
   um6::Registers r;
 
+  int32_t gps_baud;
+  ros::param::param<int32_t>("~gps_baud", gps_baud, 9600);
   // Enable outputs we need.
-  const uint8_t UM6_BAUD_115200 = 0x5;
   uint32_t comm_reg = UM6_BROADCAST_ENABLED |
                       UM6_GYROS_PROC_ENABLED | UM6_ACCELS_PROC_ENABLED | UM6_MAG_PROC_ENABLED |
                       UM6_QUAT_ENABLED | UM6_EULER_ENABLED | UM6_COV_ENABLED | UM6_TEMPERATURE_ENABLED |
-                      UM6_BAUD_115200 << UM6_BAUD_START_BIT;
+                      baudValueToBitSetting(115200) << UM6_BAUD_START_BIT |
+                      baudValueToBitSetting(gps_baud) << UM6_GPS_BAUD_START_BIT;
+
+  // Provide options for gps data
+  bool gps_enable;
+  ros::param::param<bool>("~gps_enable", gps_enable, false);
+  if(gps_enable) // enable the gps
+  {
+    ROS_INFO("gps enabled");
+    // enable GPS outputs
+    comm_reg |= UM6_GPS_POSITION_ENABLED |
+                UM6_GPS_REL_POSITION_ENABLED |
+                UM6_GPS_COURSE_SPEED_ENABLED |
+                UM6_GPS_SAT_SUMMARY_ENABLED |
+                UM6_GPS_SAT_DATA_ENABLED;
+  }
+
   r.communication.set(0, comm_reg);
   if (!sensor->sendWaitAck(r.communication))
   {
     throw std::runtime_error("Unable to set communication register.");
   }
-
+  
   // Optionally disable mag and accel updates in the sensor's EKF.
   bool mag_updates, accel_updates;
   ros::param::param<bool>("~mag_updates", mag_updates, true);
@@ -154,6 +198,10 @@ void configureSensor(um6::Comms* sensor)
   configureVector3(sensor, r.mag_bias, "~mag_bias", "magnetic bias vector");
   configureVector3(sensor, r.accel_bias, "~accel_bias", "accelerometer bias vector");
   configureVector3(sensor, r.gyro_bias, "~gyro_bias", "gyroscope bias vector");
+  if(gps_enable)
+  {
+    configureVector3(sensor, r.gps_home, "~gps_home", "gps home position vector");
+  }
 }
 
 
@@ -174,6 +222,7 @@ bool handleResetService(um6::Comms* sensor,
  */
 void publishMsgs(um6::Registers& r, ros::NodeHandle* n, const std_msgs::Header& header)
 {
+
   static ros::Publisher imu_pub = n->advertise<sensor_msgs::Imu>("imu/data", 1, false);
   static ros::Publisher mag_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/mag", 1, false);
   static ros::Publisher rpy_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/rpy", 1, false);
@@ -240,6 +289,51 @@ void publishMsgs(um6::Registers& r, ros::NodeHandle* n, const std_msgs::Header& 
     std_msgs::Float32 temp_msg;
     temp_msg.data = r.temperature.get_scaled(0);
     temp_pub.publish(temp_msg);
+  }
+  
+  bool gps_enable;
+  ros::param::param<bool>("~gps_enable", gps_enable, false);
+  if (gps_enable)
+  {
+    static ros::Publisher gps_abs_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/gps_abs", 1, false); // absolute gps position
+    static ros::Publisher gps_rel_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/gps_rel", 1, false); // relative gps position
+    static ros::Publisher gps_num_sat_pub = n->advertise<std_msgs::UInt8>("imu/gps_num_sat", 1, false); // number of satellites
+    static ros::Publisher gps_dop_pub = n->advertise<geometry_msgs::Vector3Stamped>("imu/gps_dop", 1, false); // dilution of precision
+    static ros::Publisher gps_status_pub = n->advertise<std_msgs::UInt8>("imu/gps_status", 1, false); // gps status: 0, no gps; 1, no fix; 2, 2D fix; 3, 3D fix
+
+    if (gps_status_pub.getNumSubscribers() > 0)
+    {
+      std_msgs::UInt8 gps_status_msg;
+      gps_status_msg.data = r.gps_status.get(0) >> 30;
+      gps_status_pub.publish(gps_status_msg);
+    }
+    
+    if (gps_abs_pub.getNumSubscribers() > 0)
+    {
+      geometry_msgs::Vector3Stamped gps_abs_msg;
+      gps_abs_msg.header = header;
+      gps_abs_msg.vector.x = r.gps_abs.get(0);
+      gps_abs_msg.vector.y = r.gps_abs.get(1);
+      gps_abs_msg.vector.z = r.gps_abs.get(2);
+      gps_abs_pub.publish(gps_abs_msg);
+    }
+    
+    if (gps_rel_pub.getNumSubscribers() > 0)
+    {
+      geometry_msgs::Vector3Stamped gps_rel_msg;
+      gps_rel_msg.header = header;
+      gps_rel_msg.vector.x = r.gps_rel.get(0);
+      gps_rel_msg.vector.y = r.gps_rel.get(1);
+      gps_rel_msg.vector.z = r.gps_rel.get(2);
+      gps_rel_pub.publish(gps_rel_msg);
+    }
+    
+    if (gps_num_sat_pub.getNumSubscribers() > 0)
+    {
+      std_msgs::UInt8 gps_num_sat_msg;
+      gps_num_sat_msg.data = (r.gps_status.get(0) >> 26) & 0xF;
+      gps_num_sat_pub.publish(gps_num_sat_msg);
+    }
   }
 }
 

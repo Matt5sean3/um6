@@ -1,0 +1,5 @@
+<launch>
+  <node pkg="um6" type="um6_driver" name="imu">
+    <param name="~gps_enable" value="true" />
+  </node>
+</launch>

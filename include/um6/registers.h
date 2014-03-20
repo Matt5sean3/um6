@@ -162,13 +162,18 @@ public:
     mag(this, UM6_MAG_PROC_XY, 3, 0.000305176),
     euler(this, UM6_EULER_PHI_THETA, 3, 0.0109863 * TO_RADIANS),
     quat(this, UM6_QUAT_AB, 4, 0.0000335693),
+    gps_sats(this, UM6_GPS_SAT_1_2, 12),
     covariance(this, UM6_ERROR_COV_00, 16),
     temperature(this, UM6_TEMPERATURE, 1),
+    gps_abs(this, UM6_GPS_LONGITUDE, 3),
+    gps_rel(this, UM6_GPS_POSITION_N, 3),
+    gps_status(this, UM6_GPS_SAT_SUMMARY, 1),
     communication(this, UM6_COMMUNICATION, 1),
     misc_config(this, UM6_MISC_CONFIG, 1),
     status(this, UM6_STATUS, 1),
     mag_ref(this, UM6_MAG_REF_X, 3),
     accel_ref(this, UM6_ACCEL_REF_X, 3),
+    gps_home(this, UM6_GPS_HOME_LAT, 3),
     gyro_bias(this, UM6_GYRO_BIAS_XY, 3),
     accel_bias(this, UM6_ACCEL_BIAS_XY, 3),
     mag_bias(this, UM6_MAG_BIAS_XY, 3),
@@ -182,12 +187,13 @@ public:
 
   // Data
   const Accessor<int16_t> gyro_raw, accel_raw, mag_raw,
-        gyro, accel, mag, euler, quat;
-  const Accessor<float> covariance, temperature;
-
+        gyro, accel, mag, euler, quat, gps_sats;
+  const Accessor<float> covariance, temperature, gps_abs, gps_rel;
+  const Accessor<uint32_t> gps_status;
+  
   // Configs
   const Accessor<uint32_t> communication, misc_config, status;
-  const Accessor<float> mag_ref, accel_ref;
+  const Accessor<float> mag_ref, accel_ref, gps_home;
   const Accessor<int16_t> gyro_bias, accel_bias, mag_bias;
 
   // Commands
