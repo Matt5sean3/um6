@@ -163,6 +163,7 @@ public:
     euler(this, UM6_EULER_PHI_THETA, 3, 0.0109863 * TO_RADIANS),
     quat(this, UM6_QUAT_AB, 4, 0.0000335693),
     gps_sats(this, UM6_GPS_SAT_1_2, 12),
+    gps_course_speed(this, UM6_GPS_COURSE_SPEED, 2),
     covariance(this, UM6_ERROR_COV_00, 16),
     temperature(this, UM6_TEMPERATURE, 1),
     gps_abs(this, UM6_GPS_LONGITUDE, 3),
@@ -187,7 +188,7 @@ public:
 
   // Data
   const Accessor<int16_t> gyro_raw, accel_raw, mag_raw,
-        gyro, accel, mag, euler, quat, gps_sats;
+        gyro, accel, mag, euler, quat, gps_sats, gps_course_speed;
   const Accessor<float> covariance, temperature, gps_abs, gps_rel;
   const Accessor<uint32_t> gps_status;
   

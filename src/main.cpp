@@ -45,9 +45,14 @@
 #include "um6/registers.h"
 #include "um6/Reset.h"
 
+// Required for full GPS support
+#include <math.h>
+#include "nav_msgs/Odometry.h"
+
 // Don't try to be too clever. Arrival of this message triggers
 // us to publish everything we have.
 const uint8_t TRIGGER_PACKET = UM6_TEMPERATURE;
+
 
 /**
  * Function generalizes the process of writing an XYZ vector into consecutive
@@ -196,8 +201,10 @@ void configureSensor(um6::Comms* sensor)
   configureVector3(sensor, r.mag_ref, "~mag_ref", "magnetic reference vector");
   configureVector3(sensor, r.accel_ref, "~accel_ref", "accelerometer reference vector");
   configureVector3(sensor, r.mag_bias, "~mag_bias", "magnetic bias vector");
+  ROS_INFO("D");
   configureVector3(sensor, r.accel_bias, "~accel_bias", "accelerometer bias vector");
   configureVector3(sensor, r.gyro_bias, "~gyro_bias", "gyroscope bias vector");
+  ROS_INFO("F");
   if(gps_enable)
   {
     configureVector3(sensor, r.gps_home, "~gps_home", "gps home position vector");
@@ -304,7 +311,7 @@ void publishMsgs(um6::Registers& r, ros::NodeHandle* n, const std_msgs::Header& 
     if (gps_status_pub.getNumSubscribers() > 0)
     {
       std_msgs::UInt8 gps_status_msg;
-      gps_status_msg.data = r.gps_status.get(0) >> 30;
+      gps_status_msg.data = (r.gps_status.get(0) >> UM6_GPS_MODE_START_BIT) & UM6_GPS_MODE_MASK;
       gps_status_pub.publish(gps_status_msg);
     }
     
@@ -328,11 +335,78 @@ void publishMsgs(um6::Registers& r, ros::NodeHandle* n, const std_msgs::Header& 
       gps_rel_pub.publish(gps_rel_msg);
     }
     
+    if (gps_dop_pub.getNumSubscribers() > 0)
+    {
+      geometry_msgs::Vector3Stamped gps_dop_msg;
+      gps_dop_msg.header = header;
+      double hdop = (r.gps_status.get(0) >> UM6_GPS_HDOP_START_BIT) & UM6_GPS_HDOP_MASK;
+      double vdop = (r.gps_status.get(0) >> UM6_GPS_VDOP_START_BIT) & UM6_GPS_VDOP_MASK;
+      gps_dop_msg.vector.x = hdop;
+      gps_dop_msg.vector.y = hdop;
+      gps_dop_msg.vector.z = vdop;
+    }
+    
     if (gps_num_sat_pub.getNumSubscribers() > 0)
     {
       std_msgs::UInt8 gps_num_sat_msg;
-      gps_num_sat_msg.data = (r.gps_status.get(0) >> 26) & 0xF;
+      gps_num_sat_msg.data = (r.gps_status.get(0) >> UM6_GPS_SAT_COUNT_START_BIT) & UM6_GPS_SAT_COUNT_MASK;
       gps_num_sat_pub.publish(gps_num_sat_msg);
+    }
+    
+    // A gps odometry message  compatible with robot_pose_ekf can be transmitted
+    if (ros::param::has("~gps_odom"))
+    {
+      std::string gps_odom_topic;
+      ros::param::get("~gps_odom", gps_odom_topic);
+      static ros::Publisher gps_odom_pub = n->advertise<nav_msgs::Odometry>(gps_odom_topic, 1, false);
+      if(gps_odom_pub)
+      {
+        nav_msgs::Odometry gps_odom_msg;
+        gps_odom_msg.header = header;
+        gps_odom_msg.child_frame_id = "base"; // Not particularly important
+        int c;
+        for(c = 0; c < 36; c++)
+        {
+          gps_odom_msg.pose.covariance[c] = 0;
+          gps_odom_msg.twist.covariance[c] = 0;
+        }
+        // Estimating variance as pdop
+        double hdop = (r.gps_status.get(0) >> UM6_GPS_HDOP_START_BIT) & UM6_GPS_HDOP_MASK;
+        double vdop = (r.gps_status.get(0) >> UM6_GPS_VDOP_START_BIT) & UM6_GPS_VDOP_MASK;
+        double pdop = sqrt(hdop * hdop + vdop * vdop);
+        gps_odom_msg.pose.covariance[0] = pdop;
+        gps_odom_msg.pose.covariance[7] = pdop;
+        gps_odom_msg.pose.covariance[14] = pdop;
+        // Ignore angular position data
+        gps_odom_msg.pose.covariance[21] = 999999;
+        gps_odom_msg.pose.covariance[28] = 999999;
+        gps_odom_msg.pose.covariance[35] = 999999;
+        // Ignore velocity
+        gps_odom_msg.twist.covariance[0] = 999999;
+        gps_odom_msg.twist.covariance[7] = 999999;
+        gps_odom_msg.twist.covariance[14] = 999999;
+        gps_odom_msg.twist.covariance[21] = 999999;
+        gps_odom_msg.twist.covariance[28] = 999999;
+        gps_odom_msg.twist.covariance[35] = 999999;
+        
+        gps_odom_msg.pose.pose.position.x = r.gps_abs.get(0);
+        gps_odom_msg.pose.pose.position.y = r.gps_abs.get(1);
+        gps_odom_msg.pose.pose.position.z = r.gps_abs.get(2);
+        gps_odom_msg.pose.pose.orientation.x = 0;
+        gps_odom_msg.pose.pose.orientation.y = 0;
+        gps_odom_msg.pose.pose.orientation.z = 0;
+        gps_odom_msg.pose.pose.orientation.w = 1;
+        // Calculating heading and speed from the GPS
+        double course = double(r.gps_course_speed.get(0)) * 0.0314159265; // hundreths of degrees converted to radians
+        double speed = double(r.gps_course_speed.get(1)) / 100; // centimeters per second converted to meters per second
+        gps_odom_msg.twist.twist.linear.x = speed * cos(course);
+        gps_odom_msg.twist.twist.linear.y = speed * sin(course);
+        gps_odom_msg.twist.twist.linear.z = 0;
+        gps_odom_msg.twist.twist.angular.x = 0;
+        gps_odom_msg.twist.twist.angular.y = 0;
+        gps_odom_msg.twist.twist.angular.z = 0;
+        gps_odom_pub.publish(gps_odom_msg);
+      }
     }
   }
 }

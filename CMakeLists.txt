@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(um6)
 
-find_package(catkin REQUIRED COMPONENTS roscpp roslint serial sensor_msgs message_generation)
+find_package(catkin REQUIRED COMPONENTS roscpp roslint serial sensor_msgs nav_msgs message_generation)
 
 add_service_files(
   FILES
